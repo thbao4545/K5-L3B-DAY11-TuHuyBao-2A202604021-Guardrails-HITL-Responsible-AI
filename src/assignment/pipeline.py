@@ -229,12 +229,11 @@ async def _process(pipeline: dict, blue: _Blue, user_id: str, text: str,
                 cb = getattr(plugin, "after_model_callback", None)
                 if cb is None:
                     continue
-                before = (getattr(plugin, "blocked_count", 0), getattr(plugin, "redacted_count", 0))
+                blocks_before = getattr(plugin, "blocked_count", 0)
                 out = await cb(callback_context=None, llm_response=resp)
                 if out is not None:
                     resp = out
-                after = (getattr(plugin, "blocked_count", 0), getattr(plugin, "redacted_count", 0))
-                if after != before and not blocked:
+                if getattr(plugin, "blocked_count", 0) > blocks_before and not blocked:
                     blocked, layer = True, plugin.name
             response = _text_of(resp.content) or response
 

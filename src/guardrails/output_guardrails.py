@@ -47,7 +47,11 @@ def content_filter(response: str) -> dict:
     # Order matters: specific secrets first, then PII (phone before national ID).
     PII_PATTERNS = {
         "api_key": r"\b(?:sk|pk|api|key)[-_][a-zA-Z0-9][a-zA-Z0-9_-]{5,}",
-        "password": r"(?:password|passwd|pwd|mat khau|mật khẩu)\s*(?:is|:|=|là)?\s*[:=]?\s*[^\s,;]+",
+        "password": (
+            r"\b(?:passwords?|passwd|pwd|mat khau|mật khẩu)\b"
+            r"(?:\s*[:=]\s*|\s+(?:is|là)\s+|\s+(?!(?:or|and|in|with|to)\b))"
+            r"[^\s,;]+"
+        ),
         "email": r"[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-zA-Z]{2,}",
         "vn_phone": r"(?<!\d)(?:\+84|0)[\s.-]?\d{2,3}[\s.-]?\d{3}[\s.-]?\d{3,4}(?!\d)",
         "national_id": r"(?<!\d)(?:\d{12}|\d{9})(?!\d)",
