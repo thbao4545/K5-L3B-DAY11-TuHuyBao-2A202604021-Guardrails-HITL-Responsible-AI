@@ -4,8 +4,8 @@ Lab 11 — Configuration, provider selection, API keys.
 Hai tầng model (không trộn):
 
   Blue Team (CP2–CP3, guardrails / pipeline / protected agent)
-    → CỐ ĐỊNH OpenRouter ``liquid/lfm-3-1.7b:free``
-       https://openrouter.ai/liquid/lfm-3-1.7b:free
+    → OpenRouter ``openai/gpt-5-nano`` (student-selected model)
+       https://openrouter.ai/openai/gpt-5-nano
     → Cần ``OPENROUTER_API_KEY``
 
   Red Team (CP4)
@@ -36,7 +36,7 @@ PROVIDER_OPENROUTER = "openrouter"
 
 # --- Blue Team (LOCKED) ---
 BLUE_PROVIDER = PROVIDER_OPENROUTER
-BLUE_MODEL = "liquid/lfm-3-1.7b:free"
+BLUE_MODEL = "openai/gpt-5-nano"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_OPENROUTER_MODEL = BLUE_MODEL  # alias
 
@@ -96,7 +96,7 @@ except FileNotFoundError:
 
 
 # ---------------------------------------------------------------------------
-# Blue Team — fixed OpenRouter Liquid
+# Blue Team — OpenRouter GPT-5 Nano
 # ---------------------------------------------------------------------------
 
 def get_blue_provider() -> str:

@@ -14,6 +14,11 @@ from google.adk.plugins import base_plugin
 
 from core.utils import chat_with_agent
 
+try:  # lab demo secrets (exact-match redaction)
+    from core.config import DEMO_SECRETS
+except Exception:  # pragma: no cover
+    DEMO_SECRETS = []
+
 
 # ============================================================
 # Implement content_filter()
@@ -39,21 +44,28 @@ def content_filter(response: str) -> dict:
     issues = []
     redacted = response
 
-    # PII patterns to check
+    # Order matters: specific secrets first, then PII (phone before national ID).
     PII_PATTERNS = {
-        # TODO: Add regex patterns for:
-        # - VN phone number: r"0\d{9,10}"
-        # - Email: r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}"
-        # - National ID (CMND/CCCD): r"\b\d{9}\b|\b\d{12}\b"
-        # - API key pattern: r"sk-[a-zA-Z0-9-]+"
-        # - Password pattern: r"password\s*[:=]\s*\S+"
+        "api_key": r"\b(?:sk|pk|api|key)[-_][a-zA-Z0-9][a-zA-Z0-9_-]{5,}",
+        "password": r"(?:password|passwd|pwd|mat khau|mật khẩu)\s*(?:is|:|=|là)?\s*[:=]?\s*[^\s,;]+",
+        "email": r"[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-zA-Z]{2,}",
+        "vn_phone": r"(?<!\d)(?:\+84|0)[\s.-]?\d{2,3}[\s.-]?\d{3}[\s.-]?\d{3,4}(?!\d)",
+        "national_id": r"(?<!\d)(?:\d{12}|\d{9})(?!\d)",
+        "internal_host": r"\b[\w-]+(?:\.[\w-]+)*\.internal(?::\d+)?\b",
+        "bearer_token": r"\bBearer\s+[A-Za-z0-9._~+/-]{12,}",
     }
 
     for name, pattern in PII_PATTERNS.items():
-        matches = re.findall(pattern, response, re.IGNORECASE)
+        matches = re.findall(pattern, redacted, re.IGNORECASE)
         if matches:
             issues.append(f"{name}: {len(matches)} found")
             redacted = re.sub(pattern, "[REDACTED]", redacted, flags=re.IGNORECASE)
+
+    # Exact-match demo secrets (e.g. DB host, password values) in any form
+    for secret in DEMO_SECRETS or []:
+        if secret and secret.lower() in redacted.lower():
+            issues.append("protected_secret: 1+ found")
+            redacted = re.sub(re.escape(secret), "[REDACTED]", redacted, flags=re.IGNORECASE)
 
     return {
         "safe": len(issues) == 0,
@@ -89,15 +101,11 @@ Respond with ONLY one word: SAFE or UNSAFE
 If UNSAFE, add a brief reason on the next line.
 """
 
-# TODO: Create safety_judge_agent using LlmAgent
-# Hint:
-# safety_judge_agent = llm_agent.LlmAgent(
-#     model="gemini-3.5-flash",
-#     name="safety_judge",
-#     instruction=SAFETY_JUDGE_INSTRUCTION,
-# )
-
-safety_judge_agent = None  # TODO: Replace with implementation
+safety_judge_agent = llm_agent.LlmAgent(
+    model="gemini-3.5-flash",
+    name="safety_judge",
+    instruction=SAFETY_JUDGE_INSTRUCTION,
+)
 judge_runner = None
 
 
@@ -140,6 +148,9 @@ async def llm_safety_check(response_text: str) -> dict:
 #   - Return the (possibly modified) llm_response, or None to keep original
 # ============================================================
 
+_init_judge()
+
+
 class OutputGuardrailPlugin(base_plugin.BasePlugin):
     """Plugin that checks agent output before sending to user."""
 
@@ -172,16 +183,33 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         if not response_text:
             return llm_response
 
-        # TODO: Implement logic:
-        # 1. Call content_filter(response_text)
-        #    - If issues found: replace llm_response.content with redacted version
-        #    - Increment self.redacted_count
-        # 2. If use_llm_judge: call llm_safety_check(response_text)
-        #    - If unsafe: replace llm_response.content with a safe message
-        #    - Increment self.blocked_count
-        # 3. Return llm_response (possibly modified)
+        # 1. Deterministic PII / secret redaction
+        result = content_filter(response_text)
+        if not result["safe"]:
+            self.redacted_count += 1
+            response_text = result["redacted"]
+            llm_response.content = types.Content(
+                role="model", parts=[types.Part.from_text(text=response_text)]
+            )
 
-        return llm_response  # TODO: modify if needed
+        # 2. Optional LLM judge (fail-open on judge errors; redaction already applied)
+        if self.use_llm_judge:
+            try:
+                verdict = await llm_safety_check(response_text)
+            except Exception:
+                verdict = {"safe": True, "verdict": "judge error"}
+            if not verdict["safe"]:
+                self.blocked_count += 1
+                llm_response.content = types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(
+                        text="I'm sorry, I can't share that response. "
+                             "Please ask me about your VinBank accounts, "
+                             "transactions, loans or savings."
+                    )],
+                )
+
+        return llm_response
 
 
 # ============================================================

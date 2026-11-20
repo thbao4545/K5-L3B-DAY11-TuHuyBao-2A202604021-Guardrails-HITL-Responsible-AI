@@ -11,6 +11,7 @@ Status convention (không dùng True/False mơ hồ):
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Literal
 
 from google.genai import types
@@ -51,16 +52,80 @@ def detect_injection(user_input: str) -> InputStatus:
     Returns:
         ``"BLOCK"`` if injection detected (chặn), ``"ALLOW"`` otherwise (cho qua).
     """
-    INJECTION_PATTERNS = [
-        # TODO: Add at least 5 regex patterns
-        # Example:
-        # r"ignore (all )?(previous|above) instructions",
-    ]
+    text = _canonicalize(user_input)
+    # Also check a version with all non-alphanumerics removed between letters
+    # collapsed (catches "i g n o r e" / "ignore_all" style splitting).
+    for pattern in _INJECTION_RE:
+        if pattern.search(text):
+            return "BLOCK"
 
-    for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, user_input, re.IGNORECASE):
+    squashed = re.sub(r"[^a-z0-9]", "", text)
+    for needle in _SQUASHED_NEEDLES:
+        if needle in squashed:
             return "BLOCK"
     return "ALLOW"
+
+
+_ZERO_WIDTH_RE = re.compile(r"[​-‏⁠-⁤﻿­᠎]")
+
+# Common Cyrillic/Greek homoglyphs -> Latin
+_HOMOGLYPHS = str.maketrans({
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "х": "x", "у": "y",
+    "і": "i", "ѕ": "s", "ј": "j", "ԁ": "d", "ɡ": "g",
+    "ο": "o", "α": "a", "ε": "e", "ι": "i", "ρ": "p", "υ": "u",
+})
+_LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s"})
+
+
+def _strip_diacritics(text: str) -> str:
+    text = text.replace("đ", "d").replace("Đ", "D")
+    return "".join(
+        c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
+    )
+
+
+def _canonicalize(text: str) -> str:
+    """NFKC-normalize, drop invisible/format chars, fold homoglyphs, lowercase."""
+    text = unicodedata.normalize("NFKC", text or "")
+    text = _ZERO_WIDTH_RE.sub("", text)
+    text = "".join(c for c in text if unicodedata.category(c) != "Cf")
+    text = text.lower().translate(_HOMOGLYPHS)
+    text = _strip_diacritics(text)
+    text = text.translate(_LEET)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+_INJECTION_RE = [
+    re.compile(p) for p in (
+        r"\b(ignore|disregard|forget|override|bypass)\b.{0,30}\b(previous|prior|above|earlier|all|your|any|the)\b.{0,30}\b(instructions?|rules?|prompts?|guidelines?|directives?)\b",
+        r"\bignore (all )?(previous|above) instructions\b",
+        r"\byou are now\b",
+        r"\bsystem prompt\b",
+        r"\b(reveal|show|print|display|repeat|leak|output|tell me)\b.{0,20}\b(your|the|system|hidden|internal)\b.{0,15}\b(instructions?|prompts?|rules?|config(uration)?)\b",
+        r"\bpretend (you are|to be|you're)\b",
+        r"\bact as (a |an )?(unrestricted|unfiltered|uncensored|jailbroken|evil)\b",
+        r"\b(developer|dev|god|admin|debug|sudo) mode\b",
+        r"\bjailbreak\b",
+        r"\bdo anything now\b",
+        r"\bno (restrictions|rules|limits|filters)\b",
+        r"\b(reveal|give|show|tell|share|leak)\b.{0,30}\b(admin )?(password|api[ _-]?key|secret|credentials?)\b",
+        r"\bbo qua\b.{0,25}\b(huong dan|chi dan|quy tac|lenh)\b",
+        r"\b(tiet lo|cho (toi )?biet)\b.{0,25}\b(mat khau|prompt|huong dan he thong)\b",
+        r"\b(gia vo|dong vai)\b.{0,20}\b(khong (bi )?gioi han|khong han che)\b",
+    )
+]
+
+# Matched against text with all non-alphanumerics removed (anti-splitting)
+_SQUASHED_NEEDLES = (
+    "ignoreallpreviousinstructions",
+    "ignorepreviousinstructions",
+    "ignoreaboveinstructions",
+    "ignoreallinstructions",
+    "disregardallinstructions",
+    "revealyoursystemprompt",
+    "revealyourinstructions",
+    "systemprompt",
+)
 
 
 # ============================================================
@@ -84,14 +149,20 @@ def topic_filter(user_input: str) -> InputStatus:
         ``"BLOCK"`` = chặn (off-topic hoặc topic cấm).
         ``"ALLOW"`` = cho qua (câu banking hợp lệ).
     """
-    input_lower = user_input.lower()
+    # Diacritic-fold only (no leetspeak) so "tài khoản" matches "tai khoan"
+    input_lower = _strip_diacritics(
+        unicodedata.normalize("NFKC", user_input or "")
+    ).lower()
+    input_lower = _ZERO_WIDTH_RE.sub("", input_lower)
 
-    # TODO: Implement logic:
-    # 1. If input contains any blocked topic -> return "BLOCK"
-    # 2. If input doesn't contain any allowed topic -> return "BLOCK"
-    # 3. Otherwise -> return "ALLOW"
+    def _has(keyword: str) -> bool:
+        return re.search(r"\b" + re.escape(keyword), input_lower) is not None
 
-    pass  # Replace with your implementation
+    if any(_has(t) for t in BLOCKED_TOPICS):
+        return "BLOCK"
+    if not any(_has(t) for t in ALLOWED_TOPICS):
+        return "BLOCK"
+    return "ALLOW"
 
 
 # ============================================================
@@ -144,14 +215,22 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         self.total_count += 1
         text = self._extract_text(user_message)
 
-        # TODO: Implement logic:
-        # 1. Call detect_injection(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 2. Call topic_filter(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 3. If both return "ALLOW": return None (let message through)
+        if detect_injection(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "Request blocked: it looks like an attempt to override my "
+                "instructions or extract confidential information. "
+                "I can only help with VinBank banking questions."
+            )
 
-        pass  # Replace with your implementation
+        if topic_filter(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "Sorry, I can only help with banking topics such as accounts, "
+                "transactions, transfers, loans, savings and credit cards."
+            )
+
+        return None
 
 
 # ============================================================
